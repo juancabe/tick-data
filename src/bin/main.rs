@@ -1,7 +1,16 @@
+use std::{collections::HashSet, path::PathBuf, str::FromStr};
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let mut td = tick_data::TickData::default();
-    td.run().await;
+    let coins = HashSet::from_iter(
+        ["BTC", "ETH", "LTC", "XMR"]
+            .into_iter()
+            .map(|s| s.to_string()),
+    );
+    tick_data::TickData::new(coins, 500_000_000, PathBuf::from_str("./").unwrap(), None)
+        .await?
+        .run()
+        .await;
     Ok(())
 }

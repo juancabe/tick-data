@@ -1,108 +1,121 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use bytemuck::checked::from_bytes;
-use postcard::{experimental::max_size::MaxSize, from_bytes_cobs, to_allocvec, to_allocvec_cobs, to_vec};
-use serde::{Serialize, de::DeserializeOwned};
-use tokio::{
-    fs::{File, OpenOptions},
-    io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
-};
+use futures::future::select;
+use parquet::basic::Compression;
 
-mod trade;
+use crate::persistence::{compressed_storage::CompressedStorage, hot_storage::HotStorage};
 
-pub trait HotStorable: MaxSize + DeserializeOwned + Serialize {
-    const IDENTIFY_NAME: &'static str;
+pub mod compressed_storage;
+pub mod hot_storage;
+pub mod trade;
 
-    fn unique_file_name() -> PathBuf {
-        let mut ret = String::new();
-        ret.push_str(&uuid::Uuid::now_v7().to_string());
-        ret.push_str(Self::IDENTIFY_NAME);
-        PathBuf::from(ret)
-    }
+pub trait Persistable:
+    hot_storage::HotStorable + compressed_storage::CompressStorable + Send + 'static
+{
 }
 
-pub struct HotStorage<T: HotStorable> {
+impl<T> Persistable for T where
+    T: hot_storage::HotStorable + compressed_storage::CompressStorable + Send + 'static
+{
+}
+
+pub struct ToCompress<T: Persistable> {
+    pub to_delete_file_path: PathBuf,
+    pub data: Vec<T>,
+}
+
+pub struct Persistence<T: Persistable> {
+    id_name: String,
+    to_persist_receiver: tokio::sync::mpsc::Receiver<Vec<T>>,
+    hot_storage_dir: PathBuf,
+    compressed_storage_dir: PathBuf,
     max_hot_bytes: usize,
-    data: Vec<T>,
-    file: File,
+    compression_level: Compression,
 }
 
-impl<T: HotStorable> HotStorage<T> {
-    pub async fn new(max_hot_bytes: usize, mut dir: PathBuf) -> anyhow::Result<Self> {
-        dir.push(T::unique_file_name());
-        let file_full_path = dir;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .create(true)
-            .open(&file_full_path)
-            .await?;
-
-        let data = match Self::read_file(&mut file).await? {
-            Some(d) => d,
-            None => {
-                file.set_len(0).await?;
-                log::info!("File {file_full_path:?} size was truncated to 0");
-                Vec::new()
-            }
-        };
-
-        Ok(Self {
+impl<T: Persistable> Persistence<T> {
+    pub fn new(
+        id_name: String,
+        to_persist_receiver: tokio::sync::mpsc::Receiver<Vec<T>>,
+        hot_storage_dir: PathBuf,
+        compressed_storage_dir: PathBuf,
+        max_hot_bytes: usize,
+        compression_level: Compression,
+    ) -> Self {
+        Self {
+            id_name,
+            to_persist_receiver,
+            hot_storage_dir,
+            compressed_storage_dir,
             max_hot_bytes,
-            data,
-            file,
-        })
+            compression_level,
+        }
     }
 
-    pub async fn push(&mut self, val: T) {
-        self.data.push(val);
+    pub async fn run_persistence(self) -> anyhow::Result<()> {
+        let Persistence {
+            to_persist_receiver,
+            hot_storage_dir,
+            compressed_storage_dir,
+            max_hot_bytes,
+            compression_level,
+            id_name,
+        } = self;
+
+        let (compress_sender, compress_receiver) = tokio::sync::mpsc::channel::<ToCompress<T>>(100);
+
+        loop {
+            match select(
+                core::pin::pin!(Self::receive_loop(
+                    id_name,
+                    to_persist_receiver,
+                    hot_storage_dir,
+                    compress_sender,
+                    max_hot_bytes,
+                )),
+                core::pin::pin!(Self::run_compression(
+                    compressed_storage_dir,
+                    compress_receiver,
+                    compression_level
+                )),
+            )
+            .await
+            {
+                // TODO: handle failure ?
+                futures::future::Either::Left(_) => todo!(),
+                futures::future::Either::Right(_) => todo!(),
+            }
+        }
     }
 
-    /// Writes COBS serialized `val` to `File`
-    /// Can fail on serializing and writing the file
-    async fn append_to_file(file: &mut File, val: &T) -> anyhow::Result<()> {
-        let bytes = to_allocvec_cobs(val)?;
-        file.write_all(&bytes).await?;
+    async fn run_compression(
+        compressed_storage_dir: PathBuf,
+        compress_receiver: tokio::sync::mpsc::Receiver<ToCompress<T>>,
+        compression_level: Compression,
+    ) -> anyhow::Result<()> {
+        let mut cs =
+            CompressedStorage::new(compressed_storage_dir, compress_receiver, compression_level);
+        cs.run().await?;
         Ok(())
     }
 
-    /// Reads `file` contents and tries to parse them as `Vec<T>`
-    ///
-    /// ## Behaviour
-    /// ### Parse error case
-    /// Logs parsing error and returns Ok(None)
-    /// ### `fs` error
-    /// Returns `Err(_)`
-    /// ### Valid (even if empty) `Vec<T>`
-    /// Returns `Ok(vec)`
-    async fn read_file(file: &mut File) -> anyhow::Result<Option<Vec<T>>> {
-        let start_pos = file.stream_position().await?;
-
-        let mut reader = BufReader::new(file);
-        let mut records = Vec::new();
-        let mut deserialize_buf = Vec::new()
-
-        loop {
-            let size = reader.read_until(0, &mut deserialize_buf).await?;
-            if size == 0 {
-                break;
-            }
-
-            let record = match from_bytes_cobs(&mut deserialize_buf) {
-                Ok(r) => r,
-                Err(pe) => {
-                    log::warn!("Parse error reading file: {pe:?}");
-                    return Ok(None)
-                },
-            };
-            
-        };
-
-        todo!()
+    async fn receive_loop(
+        id_name: String,
+        mut to_persist_receiver: tokio::sync::mpsc::Receiver<Vec<T>>,
+        hot_storage_dir: PathBuf,
+        compress_sender: tokio::sync::mpsc::Sender<ToCompress<T>>,
+        max_hot_bytes: usize,
+    ) -> anyhow::Result<()> {
+        let mut hot_storage = HotStorage::new(
+            id_name,
+            max_hot_bytes,
+            hot_storage_dir.clone(),
+            compress_sender,
+        )
+        .await?;
+        while let Some(to_persist) = to_persist_receiver.recv().await {
+            hot_storage.push(to_persist.into_iter()).await?;
+        }
+        Ok(())
     }
-}
-
-pub trait CompressedStorage {
-    async fn compress(self);
 }

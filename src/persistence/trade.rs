@@ -6,8 +6,10 @@ use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use crate::persistence::{compressed_storage::CompressStorable, hot_storage::HotStorable};
+
 // same as hypercore::Side
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy, PartialEq, Eq)]
 pub enum MySide {
     Bid,
     Ask,
@@ -23,7 +25,16 @@ impl From<Side> for MySide {
 }
 
 #[derive(
-    Clone, Serialize, Deserialize, Debug, MaxSize, Copy, bytemuck::Pod, bytemuck::Zeroable,
+    Clone,
+    Serialize,
+    Deserialize,
+    Debug,
+    MaxSize,
+    Copy,
+    bytemuck::Pod,
+    bytemuck::Zeroable,
+    PartialEq,
+    Eq,
 )]
 #[repr(C)]
 pub struct MyDecimal {
@@ -45,7 +56,7 @@ impl From<Decimal> for MyDecimal {
 }
 
 pub const ADDRESS_LEN: usize = 20;
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy, PartialEq, Eq)]
 pub struct MyAddress([u8; ADDRESS_LEN]);
 
 impl From<Address> for MyAddress {
@@ -57,7 +68,7 @@ impl From<Address> for MyAddress {
 // TODO: investigate real max len
 pub const MAX_LIQUIDATION_METHOD_LEN: usize = 20;
 
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq)]
 pub struct MyLiquidation {
     /// Address of liquidated user
     pub liquidated_user: MyAddress,
@@ -106,7 +117,7 @@ impl From<Liquidation> for MyLiquidation {
 pub const HASH_LEN: usize = 32;
 const MAX_SYMBOL_LEN: usize = 10;
 
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq)]
 pub struct MyTrade {
     /// Market symbol
     pub coin: heapless::String<{ MAX_SYMBOL_LEN }>,
@@ -179,5 +190,254 @@ impl From<Trade> for MyTrade {
             users: [u0.into(), u1.into()],
             liquidation: liquidation.map(|l| l.into()),
         }
+    }
+}
+
+impl MyTrade {
+    // AI generated
+    pub fn random() -> Self {
+        // Bring both traits into scope for the whole block, including local functions
+        use rand::{Rng, RngExt};
+
+        let mut rng = rand::rng();
+
+        // 1. Replaced closures with local helper functions.
+        // `impl Rng` explicitly tells the compiler this argument supports random operations.
+        fn random_decimal(rng: &mut impl Rng) -> MyDecimal {
+            MyDecimal {
+                flags: rng.random(),
+                hi: rng.random(),
+                lo: rng.random(),
+                mid: rng.random(),
+            }
+        }
+
+        fn random_address(rng: &mut impl Rng) -> MyAddress {
+            let mut addr_bytes = [0u8; ADDRESS_LEN];
+            rng.fill_bytes(&mut addr_bytes);
+            MyAddress(addr_bytes)
+        }
+
+        let coins = ["BTC", "ETH", "SOL", "AVAX", "LINK", "USDC"];
+        let random_coin = coins[rng.random_range(0..coins.len())];
+        let coin =
+            heapless::String::from_str(random_coin).expect("Coin string exceeds MAX_SYMBOL_LEN");
+
+        let side = if rng.random_bool(0.5) {
+            MySide::Bid
+        } else {
+            MySide::Ask
+        };
+
+        let mut hash = [0u8; HASH_LEN];
+        rng.fill_bytes(&mut hash);
+
+        let liquidation = if rng.random_bool(0.2) {
+            let methods = ["Market", "Force", "MarginCall"];
+            let random_method = methods[rng.random_range(0..methods.len())];
+
+            Some(MyLiquidation {
+                liquidated_user: random_address(&mut rng),
+                mark_px: random_decimal(&mut rng),
+                method: heapless::String::from_str(random_method)
+                    .expect("Method string exceeds MAX_LIQUIDATION_METHOD_LEN"),
+            })
+        } else {
+            None
+        };
+
+        Self {
+            coin,
+            side,
+            px: random_decimal(&mut rng),
+            sz: random_decimal(&mut rng),
+            time: rng.random_range(1700000000000..1800000000000),
+            hash,
+            tid: rng.random(),
+            users: [random_address(&mut rng), random_address(&mut rng)],
+            liquidation,
+        }
+    }
+
+    // AI generated to test compression
+    pub fn sequential_new(seq: usize) -> Self {
+        // 1. Cycle through a small dictionary of coins
+        let coins = ["BTC", "ETH", "SOL", "AVAX", "LINK", "USDC"];
+        let coin_str = coins[seq % coins.len()];
+        let coin =
+            heapless::String::from_str(coin_str).expect("Coin string exceeds MAX_SYMBOL_LEN");
+
+        // 2. Alternate Bid/Ask
+        let side = if seq.is_multiple_of(2) {
+            MySide::Bid
+        } else {
+            MySide::Ask
+        };
+
+        // 3. Simulating a slowly increasing price (Delta Encoding loves this)
+        let px = MyDecimal {
+            flags: 0,
+            hi: 0,
+            lo: (50000 + seq) as u32,
+            mid: 0,
+        };
+
+        // 4. Repeating sizes (e.g., sizes cycle from 1 to 10)
+        let sz = MyDecimal {
+            flags: 0,
+            hi: 0,
+            lo: ((seq % 10) + 1) as u32,
+            mid: 0,
+        };
+
+        // 5. Sequential timestamps (10ms intervals) and TIDs
+        let time = 1700000000000_u64 + (seq as u64 * 10);
+        let tid = seq as u64;
+
+        // 6. Deterministic, low-entropy hash
+        // We just encode the sequence number into the first 8 bytes and leave the rest 0
+        let mut hash = [0u8; HASH_LEN];
+        hash[0..8].copy_from_slice(&(seq as u64).to_be_bytes());
+
+        // 7. Small pool of users (e.g., 5 market makers trading against each other)
+        let user1_byte = (seq % 5) as u8;
+        let user2_byte = ((seq + 1) % 5) as u8;
+        let users = [
+            MyAddress([user1_byte; ADDRESS_LEN]),
+            MyAddress([user2_byte; ADDRESS_LEN]),
+        ];
+
+        // 8. Predictable liquidations (every 100th trade)
+        let liquidation = if seq > 0 && seq.is_multiple_of(100) {
+            let methods = ["Market", "Force", "MarginCall"];
+            let method_str = methods[seq % methods.len()];
+
+            Some(MyLiquidation {
+                liquidated_user: users[0],
+                mark_px: px,
+                method: heapless::String::from_str(method_str)
+                    .expect("Method string exceeds MAX_LIQUIDATION_METHOD_LEN"),
+            })
+        } else {
+            None
+        };
+
+        Self {
+            coin,
+            side,
+            px,
+            sz,
+            time,
+            hash,
+            tid,
+            users,
+            liquidation,
+        }
+    }
+}
+
+impl HotStorable for MyTrade {}
+impl CompressStorable for MyTrade {}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+
+    use parquet::basic::GzipLevel;
+
+    use crate::init_logger;
+
+    use super::*;
+
+    #[test]
+    fn test_write_parquet() {
+        let items = Vec::from_iter(std::iter::repeat_with(MyTrade::random).take(10000));
+        let temp_file_path = tempfile::tempdir().unwrap();
+        let mut file_path = temp_file_path.path().to_path_buf();
+        file_path.push("parquet");
+        assert!(!file_path.exists());
+        MyTrade::write_items_to_parquet(
+            &items,
+            &file_path,
+            parquet::basic::Compression::GZIP(GzipLevel::try_new(7).unwrap()),
+        )
+        .unwrap();
+        assert!(file_path.exists());
+    }
+
+    #[test]
+    fn test_read_parquet() {
+        let items = Vec::from_iter(std::iter::repeat_with(MyTrade::random).take(10000));
+        let temp_file_path = tempfile::tempdir().unwrap();
+        let mut file_path = temp_file_path.path().to_path_buf();
+        file_path.push("parquet");
+        assert!(!file_path.exists());
+        MyTrade::write_items_to_parquet(
+            &items,
+            &file_path,
+            parquet::basic::Compression::GZIP(GzipLevel::try_new(9).unwrap()),
+        )
+        .unwrap();
+        assert!(file_path.exists());
+
+        let new_items = MyTrade::read_items_from_parquet(&file_path).unwrap();
+
+        assert_eq!(new_items.len(), items.len());
+
+        for (ni, i) in new_items.iter().zip(items.iter()) {
+            assert_eq!(ni, i);
+        }
+
+        let file = File::open(file_path).unwrap();
+        init_logger();
+        log::info!(
+            "[test_read_parquet] file metadata: {:?}",
+            file.metadata().unwrap()
+        );
+        log::info!(
+            "[test_read_parquet] file len: {:?}, items RAM usage: {}",
+            file.metadata().unwrap().len(),
+            items.len() * size_of::<MyTrade>()
+        );
+    }
+
+    #[test]
+    fn test_parquet_compression() {
+        let items: Vec<MyTrade> = (0..10000).map(MyTrade::sequential_new).collect();
+        let temp_file_path = tempfile::tempdir().unwrap();
+        let mut file_path = temp_file_path.path().to_path_buf();
+        file_path.push("parquet");
+        assert!(!file_path.exists());
+        MyTrade::write_items_to_parquet(
+            &items,
+            &file_path,
+            parquet::basic::Compression::GZIP(GzipLevel::try_new(9).unwrap()),
+        )
+        .unwrap();
+        assert!(file_path.exists());
+
+        let new_items = MyTrade::read_items_from_parquet(&file_path).unwrap();
+
+        assert_eq!(new_items.len(), items.len());
+
+        for (ni, i) in new_items.iter().zip(items.iter()) {
+            assert_eq!(ni, i);
+        }
+
+        let file = File::open(file_path).unwrap();
+        init_logger();
+        log::info!(
+            "[test_read_parquet] file metadata: {:?}",
+            file.metadata().unwrap()
+        );
+        log::info!(
+            "[test_read_parquet] file len: {:?}, items RAM usage: {}",
+            file.metadata().unwrap().len(),
+            items.len() * size_of::<MyTrade>()
+        );
+
+        assert!(
+            (file.metadata().unwrap().len() as usize) < (items.len() * size_of::<MyTrade>() / 15)
+        );
     }
 }
