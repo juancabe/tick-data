@@ -9,7 +9,7 @@ use tokio::{
 
 use crate::persistence::Persistable;
 
-pub trait HotStorable: DeserializeOwned + Serialize + std::fmt::Debug {
+pub trait HotStorable: DeserializeOwned + Serialize + Eq + std::fmt::Debug {
     fn unique_file_name(id_name: &str) -> String {
         let mut ret = String::new();
         ret.push_str(&uuid::Uuid::now_v7().to_string());
@@ -36,6 +36,7 @@ pub struct HotStorage<T: Persistable> {
     file: File,
     file_path: PathBuf,
     dir_path: PathBuf,
+    push_calls: u8,
     to_compress_sender: tokio::sync::mpsc::Sender<super::ToCompress<T>>,
 }
 
@@ -121,6 +122,7 @@ impl<T: Persistable> HotStorage<T> {
             to_compress_sender,
             dir_path: dir,
             id_name,
+            push_calls: 1,
         })
     }
 
@@ -143,15 +145,19 @@ impl<T: Persistable> HotStorage<T> {
     }
 
     /// Push `iter` values to RAM collection (`data`) and `File`
-    /// `File` contents are synced to disk
-    pub async fn push(&mut self, iter: impl Iterator<Item = T>) -> anyhow::Result<()> {
-        for val in iter {
-            log::debug!("[HotStorage::push] pushing val: {:?}", val);
-            Self::append_to_file(&mut self.file, &val).await?;
-            self.data.push(val);
-        }
+    /// `File` contents are synced to disk every 10 calls to `push`
+    pub async fn push(&mut self, mut data: Vec<T>) -> anyhow::Result<()> {
+        data.retain(|d| !self.data.contains(d));
+
+        Self::append_to_file(&mut self.file, data.iter()).await?;
+        self.data.extend(data);
+
+        // Sync `File` contents with disk
 
         if self.data_ram_usage() >= self.max_hot_bytes {
+            // File will be dropped, sync
+            self.file.sync_data().await?;
+
             log::warn!(
                 "[HotStorage::push] data usage ({data_usage}) is higher than max ({max}), creating new hot file",
                 data_usage = self.data_ram_usage(),
@@ -166,7 +172,6 @@ impl<T: Persistable> HotStorage<T> {
             let mut new_file_path = self.dir_path.clone();
             new_file_path.push(new_file_name);
 
-            self.file.sync_data().await?;
             self.file = Self::open_file(&new_file_path).await?;
 
             self.to_compress_sender
@@ -178,14 +183,17 @@ impl<T: Persistable> HotStorage<T> {
                 .map_err(|_| anyhow::anyhow!("Send failed, receiver dropped"))?;
 
             self.file_path = new_file_path.clone();
+        } else if self.push_calls == 10 {
+            self.file.sync_data().await?;
+            self.push_calls = 0.try_into().unwrap();
         }
+
+        self.push_calls += 1;
 
         log::debug!(
             "[HotStorage::push] syncing file contents to disk | data_ram_usage: {}",
             self.data_ram_usage()
         );
-        // Sync `File` contents with disk
-        self.file.sync_data().await?;
 
         Ok(())
     }
@@ -193,9 +201,12 @@ impl<T: Persistable> HotStorage<T> {
     /// Writes COBS serialized `val` to `File`
     /// Can fail on serializing and writing the file
     /// File contents not synced to disk
-    async fn append_to_file(file: &mut File, val: &T) -> anyhow::Result<()> {
-        let bytes = to_allocvec_cobs(val)?;
-        file.write_all(&bytes).await?;
+    async fn append_to_file(file: &mut File, iter: impl Iterator<Item = &T>) -> anyhow::Result<()> {
+        let mut bytes: Vec<Vec<u8>> = Vec::new();
+        for t in iter {
+            bytes.push(to_allocvec_cobs(t)?);
+        }
+        file.write_all(&bytes.concat()).await?;
         Ok(())
     }
 
@@ -248,8 +259,8 @@ mod tests {
     use serde::Deserialize;
     use tokio::sync::mpsc;
 
-    #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug)]
-    struct HotStorableMock(u8);
+    #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+    struct HotStorableMock(usize);
     const MOCK_ID_NAME: &str = "HOT_STORABLE_MOCK";
 
     impl HotStorable for HotStorableMock {}
@@ -321,7 +332,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
 
         const N_MOCKS: usize = 4;
-        let mocks = [HotStorableMock::default(); N_MOCKS];
+        let mocks = (0..N_MOCKS).map(HotStorableMock);
 
         let (s, _) = get_channel();
         let mut hot_storage1 = HotStorage::<HotStorableMock>::new(
@@ -331,7 +342,7 @@ mod tests {
             s.clone(),
         )
         .await?;
-        hot_storage1.push(mocks.iter().copied()).await?;
+        hot_storage1.push(mocks.collect()).await?;
 
         let hot_storage2 = HotStorage::<HotStorableMock>::new(
             MOCK_ID_NAME.to_string(),
@@ -353,31 +364,32 @@ mod tests {
         init_logger();
         let dir = tempfile::tempdir()?;
 
-        let max_hot_bytes = 100;
+        const N_MOCKS: usize = 400;
+        const MAX_HOT_BYTES: usize = size_of::<HotStorableMock>() * (N_MOCKS / 4 * 3);
 
-        const N_MOCKS: usize = 4;
-        let mocks = [HotStorableMock::default(); N_MOCKS];
+        let mut mocks = (0..N_MOCKS).map(HotStorableMock);
         let (s, mut r) = get_channel();
         let mut hot_storage1 = HotStorage::<HotStorableMock>::new(
             MOCK_ID_NAME.to_string(),
-            max_hot_bytes,
+            MAX_HOT_BYTES,
             dir.path().to_path_buf(),
             s.clone(),
         )
         .await?;
 
-        // This for loop pushes 100 bytes = (u8 * 4 * 25) to ram
-        for _ in 0..(max_hot_bytes / N_MOCKS) {
-            log::info!(
-                "[tests::test_hot_file_triggers_compress] pushing {} values",
-                mocks.len()
-            );
-            hot_storage1.push(mocks.iter().cloned()).await.unwrap();
+        const BATCH_N: usize = 4;
+        // This for loop pushes 3200 bytes = (u64 * 400) to ram
+        for _ in 0..(N_MOCKS / BATCH_N) {
+            log::info!("[tests::test_hot_file_triggers_compress] pushing {BATCH_N} values",);
+            hot_storage1
+                .push(mocks.by_ref().take(BATCH_N).collect())
+                .await
+                .unwrap();
         }
 
         log::info!(
             "[tests::test_hot_file_triggers_compress] finished pushing {} total values",
-            mocks.len() * max_hot_bytes
+            size_of::<HotStorableMock>() * N_MOCKS
         );
         assert!(r.try_recv().is_ok());
 
@@ -389,14 +401,14 @@ mod tests {
         init_logger();
         let dir = tempfile::tempdir()?;
 
-        let max_hot_bytes = 100;
+        const N_MOCKS: usize = 400;
+        const MAX_HOT_BYTES: usize = size_of::<HotStorableMock>() * (N_MOCKS / 4 * 3);
 
-        const N_MOCKS: usize = 4;
-        let mocks = [HotStorableMock::default(); N_MOCKS];
+        let mut mocks = (0..N_MOCKS).map(HotStorableMock);
         let (s, mut r) = get_channel();
         let mut hot_storage1 = HotStorage::<HotStorableMock>::new(
             MOCK_ID_NAME.to_string(),
-            max_hot_bytes,
+            MAX_HOT_BYTES,
             dir.path().to_path_buf(),
             s.clone(),
         )
@@ -404,20 +416,21 @@ mod tests {
 
         let start_file_path = hot_storage1.file_path.clone();
         let start_file_d = hot_storage1.file.as_raw_fd();
-        // This for loop pushes 100 bytes = (u8 * 4 * 25) to ram
-        for _ in 0..(max_hot_bytes / N_MOCKS) {
-            log::info!(
-                "[tests::test_hot_file_triggers_compress] pushing {} values",
-                mocks.len()
-            );
-            hot_storage1.push(mocks.iter().cloned()).await.unwrap();
+        const BATCH_N: usize = 4;
+        // This for loop pushes 3200 bytes = (u64 * 400) to ram
+        for _ in 0..(N_MOCKS / BATCH_N) {
+            log::info!("[tests::test_hot_file_triggers_compress] pushing {BATCH_N} values",);
+            hot_storage1
+                .push(mocks.by_ref().take(BATCH_N).collect())
+                .await
+                .unwrap();
         }
+
         let end_file_path = hot_storage1.file_path.clone();
         let end_file_d = hot_storage1.file.as_raw_fd();
-
         log::info!(
             "[tests::test_hot_file_triggers_compress] finished pushing {} total values",
-            mocks.len() * max_hot_bytes
+            size_of::<HotStorableMock>() * N_MOCKS
         );
 
         assert!(r.try_recv().is_ok());

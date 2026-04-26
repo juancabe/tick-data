@@ -8,7 +8,7 @@ async fn main() -> anyhow::Result<()> {
             .into_iter()
             .map(|s| s.to_string()),
     );
-    tick_data::TickData::new(coins, 500_000_000, PathBuf::from_str("./").unwrap(), None)
+    tick_data::TickData::new(coins, 5_000_000, PathBuf::from_str("./").unwrap(), None)
         .await?
         .run()
         .await;

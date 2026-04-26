@@ -3,13 +3,14 @@ use std::sync::Once;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    time::Duration,
 };
 
 use futures::{StreamExt, stream::FuturesUnordered};
 #[cfg(test)]
 use log::LevelFilter;
 use parquet::basic::{Compression, GzipLevel};
-use tokio::{sync::mpsc::Receiver, task::JoinSet};
+use tokio::{sync::mpsc::Receiver, time::Instant};
 
 use crate::{
     ingest::IngestService,
@@ -84,11 +85,19 @@ impl TickData {
                 for (coin, trades) in trade_batches.into_iter() {
                     match senders.get(&coin) {
                         Some(sender) => {
+                            let before_send = Instant::now();
                             if let Err(e) = sender.send(trades).await {
                                 log::error!(
                                     "[TickData::run::handle_trades] sender.send resulted in error: {e:?}"
                                 )
                             }
+                            let bs = before_send.elapsed();
+                            if bs > Duration::from_millis(1) {
+                                log::warn!(
+                                    "[TickData::run::handle_trades] time to send trade: {:?} > 1ms",
+                                    bs
+                                );
+                            };
                         }
                         None => {
                             log::error!(
@@ -127,7 +136,8 @@ impl TickData {
         }
 
         log::info!(
-            "[TickData::to_trade_batches] Dissected into {:?}",
+            "[TickData::to_trade_batches] Dissected {} trades into {:?}",
+            batches.values().flatten().count(),
             batches.keys()
         );
 

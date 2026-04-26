@@ -114,7 +114,7 @@ impl<T: Persistable> Persistence<T> {
         )
         .await?;
         while let Some(to_persist) = to_persist_receiver.recv().await {
-            hot_storage.push(to_persist.into_iter()).await?;
+            hot_storage.push(to_persist).await?;
         }
         Ok(())
     }

@@ -6,9 +6,6 @@ use tokio::{sync::mpsc::Sender, time::sleep};
 
 use crate::persistence::trade::MyTrade;
 
-#[derive(thiserror::Error, Debug)]
-enum IngestError {}
-
 pub struct IngestService {
     // Connected or Disconnected
     c_state: Event,
