@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use postcard::{from_bytes_cobs, to_allocvec_cobs};
 use serde::{Serialize, de::DeserializeOwned};
@@ -9,7 +12,9 @@ use tokio::{
 
 use crate::persistence::Persistable;
 
-pub trait HotStorable: DeserializeOwned + Serialize + Eq + std::fmt::Debug {
+pub trait HotStorable:
+    DeserializeOwned + Serialize + Eq + std::fmt::Debug + std::hash::Hash
+{
     fn unique_file_name(id_name: &str) -> String {
         let mut ret = String::new();
         ret.push_str(&uuid::Uuid::now_v7().to_string());
@@ -32,7 +37,7 @@ pub struct HotStorage<T: Persistable> {
     /// max desired RAM usage of the hot storage's `data`, can be surpassed by `(n - 1) * sizeof(n)` when `Self::push` is called with `n` items
     id_name: String,
     max_hot_bytes: usize,
-    data: Vec<T>,
+    data: HashSet<T>,
     file: File,
     file_path: PathBuf,
     dir_path: PathBuf,
@@ -106,11 +111,11 @@ impl<T: Persistable> HotStorage<T> {
         let mut file = Self::open_file(&file_full_path).await?;
 
         let data = match Self::read_file(&mut file).await? {
-            Some(d) => d,
+            Some(d) => HashSet::from_iter(d),
             None => {
                 file.set_len(0).await?;
                 log::info!("File {file_full_path:?} size was truncated to 0");
-                Vec::new()
+                HashSet::new()
             }
         };
 
@@ -146,29 +151,26 @@ impl<T: Persistable> HotStorage<T> {
 
     /// Push `iter` values to RAM collection (`data`) and `File`
     /// `File` contents are synced to disk every 10 calls to `push`
-    pub async fn push(&mut self, mut data: Vec<T>) -> anyhow::Result<()> {
-        data.retain(|d| !self.data.contains(d));
-
+    pub async fn push(&mut self, data: Vec<T>) -> anyhow::Result<()> {
         Self::append_to_file(&mut self.file, data.iter()).await?;
         self.data.extend(data);
 
         // Sync `File` contents with disk
-
         if self.data_ram_usage() >= self.max_hot_bytes {
             // File will be dropped, sync
             self.file.sync_data().await?;
 
+            let new_file_name = T::unique_file_name(&self.id_name);
             log::warn!(
-                "[HotStorage::push] data usage ({data_usage}) is higher than max ({max}), creating new hot file",
+                "[HotStorage::push] data usage ({data_usage}) is higher than max ({max}), creating new hot file ({new_file_name})",
                 data_usage = self.data_ram_usage(),
                 max = self.max_hot_bytes
             );
 
-            let mut new_vec = Vec::new();
+            let mut new_vec = HashSet::new();
             // Clears self.data and gives us data to send
             std::mem::swap(&mut new_vec, &mut self.data);
 
-            let new_file_name = T::unique_file_name(&self.id_name);
             let mut new_file_path = self.dir_path.clone();
             new_file_path.push(new_file_name);
 
@@ -177,7 +179,7 @@ impl<T: Persistable> HotStorage<T> {
             self.to_compress_sender
                 .send(super::ToCompress {
                     to_delete_file_path: self.file_path.clone(),
-                    data: new_vec,
+                    data: new_vec.into_iter().collect(),
                 })
                 .await
                 .map_err(|_| anyhow::anyhow!("Send failed, receiver dropped"))?;
@@ -259,7 +261,7 @@ mod tests {
     use serde::Deserialize;
     use tokio::sync::mpsc;
 
-    #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
     struct HotStorableMock(usize);
     const MOCK_ID_NAME: &str = "HOT_STORABLE_MOCK";
 

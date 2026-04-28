@@ -1,0 +1,45 @@
+use std::{collections::HashMap, time::UNIX_EPOCH};
+
+use postcard::experimental::max_size::MaxSize;
+use serde::{Deserialize, Serialize};
+
+use crate::persistence::{
+    compressed_storage::CompressStorable,
+    hot_storage::HotStorable,
+    models::{MAX_SYMBOL_LEN, MyDecimal},
+};
+
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq, Hash)]
+pub struct MyMid {
+    pub coin: heapless::String<{ MAX_SYMBOL_LEN }>,
+    pub mid_px: MyDecimal,
+    pub timestamp: u64,
+}
+
+impl MyMid {
+    pub const ID_NAME: &'static str = "ALLMIDS";
+
+    pub fn from_hm(value: HashMap<String, hypersdk::Decimal>) -> Vec<Self> {
+        let timestamp: u64 = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Correct system clock")
+            .as_millis()
+            .try_into()
+            .expect("Reasonable year to run this code :D");
+
+        let mut mids = Vec::new();
+
+        for (coin, mid_px) in value {
+            mids.push(Self {
+                coin: coin.as_str().try_into().unwrap(),
+                mid_px: mid_px.into(),
+                timestamp,
+            });
+        }
+
+        mids
+    }
+}
+
+impl HotStorable for MyMid {}
+impl CompressStorable for MyMid {}

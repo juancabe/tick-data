@@ -7,7 +7,7 @@ use crate::persistence::{compressed_storage::CompressedStorage, hot_storage::Hot
 
 pub mod compressed_storage;
 pub mod hot_storage;
-pub mod trade;
+pub mod models;
 
 pub trait Persistable:
     hot_storage::HotStorable + compressed_storage::CompressStorable + Send + 'static
@@ -82,8 +82,14 @@ impl<T: Persistable> Persistence<T> {
             .await
             {
                 // TODO: handle failure ?
-                futures::future::Either::Left(_) => todo!(),
-                futures::future::Either::Right(_) => todo!(),
+                futures::future::Either::Left(l) => {
+                    l.0.unwrap();
+                    todo!("Handle")
+                }
+                futures::future::Either::Right(r) => {
+                    r.0.unwrap();
+                    todo!("Handle")
+                }
             }
         }
     }

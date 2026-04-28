@@ -4,11 +4,7 @@ use std::{
 };
 
 use arrow::datatypes::FieldRef;
-use parquet::{
-    arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
-    basic::Compression,
-    file::properties::WriterProperties,
-};
+use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_arrow::schema::{SchemaLike, TracingOptions};
 
@@ -20,6 +16,8 @@ pub trait CompressStorable: Serialize + DeserializeOwned {
         file_path: impl AsRef<Path>,
         compression: Compression,
     ) -> anyhow::Result<()> {
+        let start = tokio::time::Instant::now();
+
         if items.is_empty() {
             return Ok(()); // Nothing to write
         }
@@ -42,9 +40,18 @@ pub trait CompressStorable: Serialize + DeserializeOwned {
         writer.close()?;
         file.sync_all()?;
 
+        log::info!(
+            "[CompressStorable::write_items_to_parquet] took ({duration:?}) to complete",
+            duration = start.elapsed()
+        );
+
         Ok(())
     }
+
+    #[cfg(test)]
     fn read_items_from_parquet(file_path: impl AsRef<Path>) -> anyhow::Result<Vec<Self>> {
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
         let file = File::open(file_path)?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
         let reader = builder.build()?;
@@ -114,7 +121,7 @@ impl<T: Persistable> CompressedStorage<T> {
 
 #[cfg(test)]
 mod tests {
-    use parquet::basic::GzipLevel;
+    use parquet::basic::ZstdLevel;
     use serde::Deserialize;
     use tokio::sync::mpsc;
 
@@ -149,7 +156,7 @@ mod tests {
         let _ = CompressedStorage::new(
             dir.path().to_path_buf(),
             r,
-            Compression::GZIP(GzipLevel::try_new(7).unwrap()),
+            Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         );
     }
 
@@ -161,7 +168,7 @@ mod tests {
         let cs = CompressedStorage::new(
             dir.path().to_path_buf(),
             r,
-            Compression::GZIP(GzipLevel::try_new(7).unwrap()),
+            Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         );
 
         let datum = CompressStorableMock::default();
@@ -194,7 +201,7 @@ mod tests {
         let cs = CompressedStorage::new(
             dir.path().to_path_buf(),
             r,
-            Compression::GZIP(GzipLevel::try_new(7).unwrap()),
+            Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         );
 
         const DATA_N: usize = 10000;

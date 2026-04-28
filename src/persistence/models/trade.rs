@@ -1,15 +1,19 @@
 use hypersdk::{
-    Address, Decimal,
+    Address,
     hypercore::{Liquidation, Side, Trade},
 };
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-use crate::persistence::{compressed_storage::CompressStorable, hot_storage::HotStorable};
+use crate::persistence::{
+    compressed_storage::CompressStorable,
+    hot_storage::HotStorable,
+    models::{MAX_SYMBOL_LEN, MyDecimal},
+};
 
 // same as hypercore::Side
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy, PartialEq, Eq, Hash)]
 pub enum MySide {
     Bid,
     Ask,
@@ -24,39 +28,8 @@ impl From<Side> for MySide {
     }
 }
 
-#[derive(
-    Clone,
-    Serialize,
-    Deserialize,
-    Debug,
-    MaxSize,
-    Copy,
-    bytemuck::Pod,
-    bytemuck::Zeroable,
-    PartialEq,
-    Eq,
-)]
-#[repr(C)]
-pub struct MyDecimal {
-    // described in hypersdk::Decimal
-    flags: u32,
-    hi: u32,
-    lo: u32,
-    mid: u32,
-}
-
-impl From<Decimal> for MyDecimal {
-    /// Converts hypersdk::Decimal to MyDecimal
-    ///
-    /// ## Panics
-    /// Only if hypersdk::Decimal size doesn't match MyDecimal's size
-    fn from(value: Decimal) -> Self {
-        bytemuck::cast(value)
-    }
-}
-
 pub const ADDRESS_LEN: usize = 20;
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, Copy, PartialEq, Eq, Hash)]
 pub struct MyAddress([u8; ADDRESS_LEN]);
 
 impl From<Address> for MyAddress {
@@ -68,7 +41,7 @@ impl From<Address> for MyAddress {
 // TODO: investigate real max len
 pub const MAX_LIQUIDATION_METHOD_LEN: usize = 20;
 
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq, Hash)]
 pub struct MyLiquidation {
     /// Address of liquidated user
     pub liquidated_user: MyAddress,
@@ -115,9 +88,8 @@ impl From<Liquidation> for MyLiquidation {
 }
 
 pub const HASH_LEN: usize = 32;
-const MAX_SYMBOL_LEN: usize = 10;
 
-#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, MaxSize, PartialEq, Eq, Hash)]
 pub struct MyTrade {
     /// Market symbol
     pub coin: heapless::String<{ MAX_SYMBOL_LEN }>,
@@ -195,7 +167,8 @@ impl From<Trade> for MyTrade {
 
 impl MyTrade {
     // AI generated
-    pub fn random() -> Self {
+    #[cfg(test)]
+    fn random() -> Self {
         // Bring both traits into scope for the whole block, including local functions
         use rand::{Rng, RngExt};
 
@@ -260,6 +233,7 @@ impl MyTrade {
     }
 
     // AI generated to test compression
+    #[cfg(test)]
     pub fn sequential_new(seq: usize) -> Self {
         // 1. Cycle through a small dictionary of coins
         let coins = ["BTC", "ETH", "SOL", "AVAX", "LINK", "USDC"];
@@ -343,7 +317,7 @@ impl CompressStorable for MyTrade {}
 mod tests {
     use std::fs::File;
 
-    use parquet::basic::GzipLevel;
+    use parquet::basic::{Compression, ZstdLevel};
 
     use crate::init_logger;
 
@@ -359,7 +333,7 @@ mod tests {
         MyTrade::write_items_to_parquet(
             &items,
             &file_path,
-            parquet::basic::Compression::GZIP(GzipLevel::try_new(7).unwrap()),
+            Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         )
         .unwrap();
         assert!(file_path.exists());
@@ -375,7 +349,7 @@ mod tests {
         MyTrade::write_items_to_parquet(
             &items,
             &file_path,
-            parquet::basic::Compression::GZIP(GzipLevel::try_new(9).unwrap()),
+            Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         )
         .unwrap();
         assert!(file_path.exists());
@@ -411,7 +385,7 @@ mod tests {
         MyTrade::write_items_to_parquet(
             &items,
             &file_path,
-            parquet::basic::Compression::GZIP(GzipLevel::try_new(9).unwrap()),
+            Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         )
         .unwrap();
         assert!(file_path.exists());
