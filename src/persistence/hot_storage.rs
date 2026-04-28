@@ -183,7 +183,7 @@ impl<T: Persistable> HotStorage<T> {
                 .map_err(|_| anyhow::anyhow!("Send failed, receiver dropped"))?;
 
             self.file_path = new_file_path.clone();
-        } else if self.push_calls == 10 {
+        } else if self.push_calls >= 10 {
             self.file.sync_data().await?;
             self.push_calls = 0.try_into().unwrap();
         }
