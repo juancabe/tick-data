@@ -1,0 +1,20 @@
+[Unit]
+Description=Tick Data Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tick_data_systemd
+Restart=on-failure
+RestartSec=5s
+
+# Dynamic user
+DynamicUser=yes
+StateDirectory=tick-data-systemd
+WorkingDirectory=/var/lib/tick-data-systemd
+EnvironmentFile=/etc/default/tick-data.env
+
+[Install]
+WantedBy=multi-user.target
+
