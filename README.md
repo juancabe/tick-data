@@ -1,6 +1,6 @@
 # TickData
 
-App to collect data from [HyperLiquid's public WebSocket](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket)'s public `WebSocket`, store it and safely persist it compressed in `parquet` files.
+App to collect data from [*HyperLiquid*'s public WebSocket](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket), store it and safely persist it compressed in `parquet` files.
 
 Collected data can be personalized, you can opt out of every piece of data collected. 
 
