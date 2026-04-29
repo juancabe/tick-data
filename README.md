@@ -33,3 +33,9 @@ It sets up a SystemD dynamic (sandboxed) user, create this `.service` file at `/
 #### Requirements
 
 It needs the configuration file [`/etc/default/tick-data.env`](./systemd/tick-data.env) to exist *(and be readable by `root`)*.
+
+## TODOs
+
+- [ ] Improve in-code documentation
+- [ ] Add new interesting subscriptions
+
