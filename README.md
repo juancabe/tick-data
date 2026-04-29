@@ -36,6 +36,7 @@ It needs the configuration file [`/etc/default/tick-data.env`](./systemd/tick-da
 
 ## TODOs
 
+- [ ] Handle `SIGTERM` (same handler as `SIGINT`)
 - [ ] Improve in-code documentation
 - [ ] Add new interesting subscriptions
 
