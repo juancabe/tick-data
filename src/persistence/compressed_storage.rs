@@ -132,7 +132,9 @@ mod tests {
 
     use super::*;
 
-    #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[derive(
+        Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+    )]
     struct CompressStorableMock {
         val: u8,
     }

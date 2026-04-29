@@ -112,6 +112,21 @@ pub struct MyTrade {
     pub liquidation: Option<MyLiquidation>,
 }
 
+impl Ord for MyTrade {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.time
+            .cmp(&other.time)
+            .then(self.hash.cmp(&other.hash))
+            .then(self.tid.cmp(&other.tid))
+    }
+}
+
+impl PartialOrd for MyTrade {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl From<Trade> for MyTrade {
     fn from(
         Trade {

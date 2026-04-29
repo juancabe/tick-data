@@ -16,6 +16,20 @@ pub struct MyMid {
     pub timestamp: u64,
 }
 
+impl Ord for MyMid {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp
+            .cmp(&other.timestamp)
+            .then(self.coin.cmp(&other.coin))
+    }
+}
+
+impl PartialOrd for MyMid {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl MyMid {
     pub const ID_NAME: &'static str = "ALLMIDS";
 

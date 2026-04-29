@@ -7,13 +7,13 @@ use postcard::{from_bytes_cobs, to_allocvec_cobs};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     fs::{self, File, OpenOptions},
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader},
 };
 
 use crate::persistence::Persistable;
 
 pub trait HotStorable:
-    DeserializeOwned + Serialize + Eq + std::fmt::Debug + std::hash::Hash
+    DeserializeOwned + Serialize + Eq + std::fmt::Debug + std::hash::Hash + Clone + Ord
 {
     fn unique_file_name(id_name: &str) -> String {
         let mut ret = String::new();
@@ -46,6 +46,13 @@ pub struct HotStorage<T: Persistable> {
 }
 
 impl<T: Persistable> HotStorage<T> {
+    #[cfg(test)]
+    fn get_ordered_data_vec(&self) -> Vec<T> {
+        let mut vec: Vec<T> = self.data.iter().cloned().collect();
+        vec.sort();
+        vec
+    }
+
     async fn find_old_files_pathbufs(
         id_name: &str,
         dir_path: impl AsRef<Path>,
@@ -167,9 +174,13 @@ impl<T: Persistable> HotStorage<T> {
                 max = self.max_hot_bytes
             );
 
-            let mut new_vec = HashSet::new();
+            let mut new_hs = HashSet::new();
+
             // Clears self.data and gives us data to send
-            std::mem::swap(&mut new_vec, &mut self.data);
+            std::mem::swap(&mut new_hs, &mut self.data);
+
+            let mut full_data: Vec<T> = new_hs.into_iter().collect();
+            full_data.sort();
 
             let mut new_file_path = self.dir_path.clone();
             new_file_path.push(new_file_name);
@@ -179,7 +190,7 @@ impl<T: Persistable> HotStorage<T> {
             self.to_compress_sender
                 .send(super::ToCompress {
                     to_delete_file_path: self.file_path.clone(),
-                    data: new_vec.into_iter().collect(),
+                    data: full_data,
                 })
                 .await
                 .map_err(|_| anyhow::anyhow!("Send failed, receiver dropped"))?;
@@ -188,6 +199,12 @@ impl<T: Persistable> HotStorage<T> {
         } else if self.push_calls >= 10 {
             self.file.sync_data().await?;
             self.push_calls = 0.try_into().unwrap();
+            log::debug!(
+                "\ndata size: {}\nfile size: {:?}\nmax hot b: {}",
+                self.data.len() * size_of::<T>(),
+                self.file.stream_position().await,
+                self.max_hot_bytes
+            )
         }
 
         self.push_calls += 1;
@@ -261,7 +278,9 @@ mod tests {
     use serde::Deserialize;
     use tokio::sync::mpsc;
 
-    #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[derive(
+        Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+    )]
     struct HotStorableMock(usize);
     const MOCK_ID_NAME: &str = "HOT_STORABLE_MOCK";
 
@@ -344,7 +363,7 @@ mod tests {
             s.clone(),
         )
         .await?;
-        hot_storage1.push(mocks.collect()).await?;
+        hot_storage1.push(mocks.clone().collect()).await?;
 
         let hot_storage2 = HotStorage::<HotStorableMock>::new(
             MOCK_ID_NAME.to_string(),
@@ -357,6 +376,13 @@ mod tests {
         assert_eq!(hot_storage1.file_path, hot_storage2.file_path);
         assert_eq!(hot_storage1.data.len(), N_MOCKS);
         assert_eq!(hot_storage1.data.len(), hot_storage2.data.len());
+        assert!(
+            hot_storage1
+                .get_ordered_data_vec()
+                .iter()
+                .zip(hot_storage2.get_ordered_data_vec().iter().zip(mocks))
+                .all(|(h1, (h2, m))| h1 == h2 && *h2 == m)
+        );
 
         Ok(())
     }
@@ -367,7 +393,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
 
         const N_MOCKS: usize = 400;
-        const MAX_HOT_BYTES: usize = size_of::<HotStorableMock>() * (N_MOCKS / 4 * 3);
+        const MAX_HOT_BYTES: usize = size_of::<HotStorableMock>() * (N_MOCKS / 4 * 3); // = 8 * (300) = 2400
 
         let mut mocks = (0..N_MOCKS).map(HotStorableMock);
         let (s, mut r) = get_channel();
@@ -393,8 +419,8 @@ mod tests {
             "[tests::test_hot_file_triggers_compress] finished pushing {} total values",
             size_of::<HotStorableMock>() * N_MOCKS
         );
-        assert!(r.try_recv().is_ok());
 
+        assert!(r.try_recv().unwrap().data.is_sorted());
         Ok(())
     }
 
@@ -435,7 +461,7 @@ mod tests {
             size_of::<HotStorableMock>() * N_MOCKS
         );
 
-        assert!(r.try_recv().is_ok());
+        assert!(r.try_recv().unwrap().data.is_sorted());
         assert_ne!(start_file_path, end_file_path);
         assert_ne!(start_file_d, end_file_d);
         assert!(start_file_path.try_exists().unwrap());
