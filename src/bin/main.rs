@@ -32,13 +32,13 @@ async fn main() -> anyhow::Result<()> {
 
     let default_mids_enabled: bool = env::var("DEFAULT_DEX_MIDS_ENABLED")
         .inspect_err(|e| {
-            log::warn!("Error reading MIDS_ENABLED, assuming false: {e:?}");
+            log::warn!("Error reading DEFAULT_DEX_MIDS_ENABLED, assuming false: {e:?}");
         })
         .ok()
         .map(|me| {
             me.parse::<bool>()
                 .inspect_err(|e| {
-                    panic!("Invalid MIDS_ENABLED value: {me}, error: {e:?}");
+                    panic!("Invalid DEFAULT_DEX_MIDS_ENABLED value: {me}, error: {e:?}");
                 })
                 .unwrap()
         })

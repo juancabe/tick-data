@@ -7,13 +7,16 @@ Collected data can be personalized, you can opt out of every piece of data colle
 ## Configuration
 
 - *RUST_LOG*: Configures `log` level, `info` is recommended.
-- *HOT_BUDGET*: \~Defines how much _uncompressed disk space_ and _RAM_ will each _hot-file-related_ data (each coin `trade` and `mids` use one hot file) consume.
-  RAM can spike when some transform operations are done, so expect 2x average RAM usage during some moments.
-    An example of resource usage can be:
-    HOT_BUDGET=125000000, `3 coins` + `mids` configured ->
-      125 MB * 4 = \~0.5 GB of average usage, can spike to \~1 GB
-- *MIDS_ENABLED*: Possible values \[true | false\] can enable / disable collecting `all_mids`.
-- *TRADE_COINS*: List of symbols that will define which subscription to the `trades` stream'll be made. 
+- *WORK_DIR*: Base directory for data storage. The app creates:
+  - `trades/<COIN>/hot-storage` and `trades/<COIN>/compressed-storage`
+  - `mids/<DEX>_DEX/hot-storage` and `mids/<DEX>_DEX/compressed-storage`
+- *HOT_BUDGET*: Defines the max hot storage size per pipeline (each coin trades and each dex mids).
+  RAM can spike during transforms, so expect up to ~2x average RAM usage.
+  Example: HOT_BUDGET=125000000 with 3 coins + 2 dex mids -> 5 pipelines
+  125 MB * 5 = ~0.625 GB average, can spike to ~1.25 GB
+- *TRADE_COINS*: Comma-separated list of symbols to subscribe to the trades stream.
+- *DEFAULT_DEX_MIDS_ENABLED*: Possible values [true | false] to enable mids for the default dex.
+- *MIDS_NON_DEFAULT_DEXES*: Comma-separated list of dex identifiers to subscribe to `all_mids`.
 
 ## How to run SystemD Service
 
