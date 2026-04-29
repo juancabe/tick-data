@@ -67,16 +67,16 @@ pub trait CompressStorable: Serialize + DeserializeOwned {
     }
 }
 
-pub struct CompressedStorage<T: Persistable> {
+pub struct CompressedStorage<'a, T: Persistable> {
     dir_path: PathBuf,
-    to_compress_receiver: tokio::sync::mpsc::Receiver<super::ToCompress<T>>,
+    to_compress_receiver: &'a mut tokio::sync::mpsc::Receiver<super::ToCompress<T>>,
     compression_level: Compression,
 }
 
-impl<T: Persistable> CompressedStorage<T> {
+impl<'a, T: Persistable> CompressedStorage<'a, T> {
     pub fn new(
         dir_path: PathBuf,
-        to_compress_receiver: tokio::sync::mpsc::Receiver<super::ToCompress<T>>,
+        to_compress_receiver: &'a mut tokio::sync::mpsc::Receiver<super::ToCompress<T>>,
         compression_level: Compression,
     ) -> Self {
         CompressedStorage {
@@ -153,11 +153,11 @@ mod tests {
     #[tokio::test]
     async fn test_new() {
         init_logger();
-        let (_, r) = get_channel();
+        let (_, mut r) = get_channel();
         let dir = tempfile::tempdir().unwrap();
         let _ = CompressedStorage::new(
             dir.path().to_path_buf(),
-            r,
+            &mut r,
             Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         );
     }
@@ -165,11 +165,11 @@ mod tests {
     #[tokio::test]
     async fn test_compress_and_delete() {
         init_logger();
-        let (_, r) = get_channel();
+        let (_, mut r) = get_channel();
         let dir = tempfile::tempdir().unwrap();
         let cs = CompressedStorage::new(
             dir.path().to_path_buf(),
-            r,
+            &mut r,
             Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         );
 
@@ -198,11 +198,11 @@ mod tests {
     #[tokio::test]
     async fn test_read_parquet() {
         init_logger();
-        let (_, r) = get_channel();
+        let (_, mut r) = get_channel();
         let dir = tempfile::tempdir().unwrap();
         let cs = CompressedStorage::new(
             dir.path().to_path_buf(),
-            r,
+            &mut r,
             Compression::ZSTD(ZstdLevel::try_new(9).unwrap()),
         );
 

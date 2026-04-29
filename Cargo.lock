@@ -5594,6 +5594,7 @@ dependencies = [
  "alloy-primitives",
  "anyhow",
  "arrow",
+ "async-trait",
  "bytemuck",
  "df-derive",
  "env_logger",

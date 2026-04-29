@@ -33,7 +33,7 @@ pub trait HotStorable:
     }
 }
 
-pub struct HotStorage<T: Persistable> {
+pub struct HotStorage<'a, T: Persistable> {
     /// max desired RAM usage of the hot storage's `data`, can be surpassed by `(n - 1) * sizeof(n)` when `Self::push` is called with `n` items
     id_name: String,
     max_hot_bytes: usize,
@@ -42,10 +42,10 @@ pub struct HotStorage<T: Persistable> {
     file_path: PathBuf,
     dir_path: PathBuf,
     push_calls: u8,
-    to_compress_sender: tokio::sync::mpsc::Sender<super::ToCompress<T>>,
+    to_compress_sender: &'a tokio::sync::mpsc::Sender<super::ToCompress<T>>,
 }
 
-impl<T: Persistable> HotStorage<T> {
+impl<'a, T: Persistable> HotStorage<'a, T> {
     #[cfg(test)]
     fn get_ordered_data_vec(&self) -> Vec<T> {
         let mut vec: Vec<T> = self.data.iter().cloned().collect();
@@ -107,7 +107,7 @@ impl<T: Persistable> HotStorage<T> {
         id_name: String,
         max_hot_bytes: usize,
         dir: PathBuf,
-        to_compress_sender: tokio::sync::mpsc::Sender<super::ToCompress<T>>,
+        to_compress_sender: &'a tokio::sync::mpsc::Sender<super::ToCompress<T>>,
     ) -> anyhow::Result<Self> {
         let file_name = Self::recover_old_file(&id_name, &dir)
             .await?
@@ -307,7 +307,7 @@ mod tests {
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s,
+            &s,
         )
         .await?;
         let old_paths =
@@ -332,14 +332,14 @@ mod tests {
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s.clone(),
+            &s,
         )
         .await?;
         let hot_storage2 = HotStorage::<HotStorableMock>::new(
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s.clone(),
+            &s,
         )
         .await?;
 
@@ -360,7 +360,7 @@ mod tests {
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s.clone(),
+            &s,
         )
         .await?;
         hot_storage1.push(mocks.clone().collect()).await?;
@@ -369,7 +369,7 @@ mod tests {
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s.clone(),
+            &s,
         )
         .await?;
 
@@ -401,7 +401,7 @@ mod tests {
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s.clone(),
+            &s,
         )
         .await?;
 
@@ -438,7 +438,7 @@ mod tests {
             MOCK_ID_NAME.to_string(),
             MAX_HOT_BYTES,
             dir.path().to_path_buf(),
-            s.clone(),
+            &s,
         )
         .await?;
 

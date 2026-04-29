@@ -1,44 +1,23 @@
-use std::{collections::HashSet, time::Duration};
+use std::time::Duration;
 
 use futures::StreamExt;
-use hypersdk::hypercore::{self, ws::Event};
-use tokio::{sync::mpsc::Sender, time::sleep};
+use hypersdk::hypercore::{self, Subscription, ws::Event};
+use tokio::time::sleep;
 
-use crate::persistence::models::{mid::MyMid, trade::MyTrade};
-
-pub struct IngestService {
-    // Connected or Disconnected
-    c_state: Event,
-    coins: HashSet<String>,
-    trades_sender: Option<Sender<Vec<MyTrade>>>,
-    all_mids_sender: Option<Sender<Vec<MyMid>>>,
+#[async_trait::async_trait]
+pub trait SubscriptionHandler {
+    fn subscriptions(&self) -> Vec<Subscription>;
+    async fn handle_incoming(&self, msg: hypercore::Incoming) -> bool;
 }
 
-const DEX: Option<String> = None;
-
-impl Default for IngestService {
-    fn default() -> Self {
-        Self {
-            c_state: Event::Disconnected,
-            coins: Default::default(),
-            trades_sender: Default::default(),
-            all_mids_sender: Default::default(),
-        }
-    }
+#[derive(Default)]
+pub struct IngestService {
+    handlers: Vec<Box<dyn SubscriptionHandler>>,
 }
 
 impl IngestService {
-    pub fn new(
-        coins: HashSet<String>,
-        trades_sender: Option<Sender<Vec<MyTrade>>>,
-        all_mids_sender: Option<Sender<Vec<MyMid>>>,
-    ) -> Self {
-        Self {
-            coins,
-            trades_sender,
-            all_mids_sender,
-            ..Default::default()
-        }
+    pub fn new(handlers: Vec<Box<dyn SubscriptionHandler>>) -> Self {
+        Self { handlers }
     }
 
     pub async fn run(&mut self) {
@@ -52,33 +31,14 @@ impl IngestService {
                 log::debug!("[IngestService::run] Received from WebSocket: {:?}", e);
                 let m = match e {
                     Event::Connected => {
-                        if matches!(self.c_state, Event::Disconnected) {
-                            self.c_state = Event::Connected
-                        } else {
-                            log::warn!(
-                                "[IngestService::run] Received {e:?} when c_state was {:?}",
-                                self.c_state
-                            );
-                        }
                         // Subscribe once connected
-                        for coin in self.coins.clone() {
-                            ws.subscribe(hypercore::Subscription::Trades { coin });
-                        }
-
-                        if self.all_mids_sender.is_some() {
-                            ws.subscribe(hypercore::Subscription::AllMids { dex: DEX });
+                        for sub in self.handlers.iter().flat_map(|h| h.subscriptions()) {
+                            ws.subscribe(sub);
                         }
                         continue;
                     }
                     Event::Disconnected => {
-                        if matches!(self.c_state, Event::Connected) {
-                            self.c_state = Event::Disconnected
-                        } else {
-                            log::warn!(
-                                "[IngestService::run] Received {e:?} when c_state was {:?}",
-                                self.c_state
-                            );
-                        }
+                        log::warn!("[IngestService::run] Event::Disconnected");
                         continue;
                     }
                     Event::Message(m) => m,
@@ -88,36 +48,17 @@ impl IngestService {
                     hypercore::Incoming::SubscriptionResponse(og) => {
                         log::warn!("[IngestService::run] Handle: {og:?}");
                     }
-                    hypercore::Incoming::Trades(trades) => {
-                        log::debug!("[IngestService::run] Received trades: {trades:?}");
-                        log::debug!("[IngestService::run] Received {} trades", trades.len());
-                        if let Some(trades_sender) = &self.trades_sender {
-                            let trades = trades.into_iter().map(MyTrade::from).collect();
-                            if let Err(e) = trades_sender.send(trades).await {
-                                log::error!(
-                                    "[IngestService::run] Error sending trades to consumer: {e:?}"
-                                )
-                            };
-                        }
-                    }
-                    hypercore::Incoming::AllMids { dex, mids } => {
-                        if DEX != dex {
-                            log::error!("DEX != dex, skipping");
-                            continue;
+                    m => {
+                        let mut handled = false;
+                        for handler in &self.handlers {
+                            if handler.handle_incoming(m.clone()).await {
+                                handled = true;
+                            }
                         }
 
-                        log::debug!("[IngestService::run] Received mids: {}", mids.len());
-
-                        if let Some(mids_sender) = &self.all_mids_sender
-                            && let Err(e) = mids_sender.send(MyMid::from_hm(mids)).await
-                        {
-                            log::error!(
-                                "[IngestService::run] Error sending mids to consumer: {e:?}"
-                            )
+                        if !handled {
+                            log::warn!("[IngestService::run] unhandled message");
                         }
-                    }
-                    unhandled => {
-                        log::warn!("[IngestService::run] Unhandled event: {unhandled:?}");
                     }
                 }
             }

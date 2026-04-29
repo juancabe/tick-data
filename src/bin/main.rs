@@ -1,4 +1,6 @@
-use std::{collections::HashSet, env, path::PathBuf, str::FromStr};
+use std::{env, path::PathBuf, str::FromStr};
+
+use tick_data::{Dex, EnabledMids, EnabledTrades};
 
 const DEFAULT_HOT_BUDGET: usize = 125_000_000;
 
@@ -14,14 +16,21 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or(DEFAULT_HOT_BUDGET);
 
-    let coins: Vec<String> = env::var("TRADE_COINS")
+    let trades: Vec<String> = env::var("TRADE_COINS")
         .map(|val| val.split(',').map(|s| s.to_string()).collect())
         .inspect(|coins| {
             log::info!("[main] coins parsed: {coins:?}");
         })
         .unwrap_or_default();
 
-    let mids_enabled: bool = env::var("MIDS_ENABLED")
+    let dexes: Vec<String> = env::var("MIDS_NON_DEFAULT_DEXES")
+        .map(|val| val.split(',').map(|s| s.to_string()).collect())
+        .inspect(|dex| {
+            log::info!("[main] dex parsed: {dex:?}");
+        })
+        .unwrap_or_default();
+
+    let default_mids_enabled: bool = env::var("DEFAULT_DEX_MIDS_ENABLED")
         .inspect_err(|e| {
             log::warn!("Error reading MIDS_ENABLED, assuming false: {e:?}");
         })
@@ -42,12 +51,17 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or("./".to_string());
 
+    let mut dexes: Vec<Dex> = dexes.into_iter().map(Dex::Other).collect();
+    if default_mids_enabled {
+        dexes.push(Dex::Principal);
+    }
+
     tick_data::TickData::new(
-        HashSet::from_iter(coins),
         hot_budget,
         PathBuf::from_str(&work_dir).unwrap(),
         None,
-        mids_enabled,
+        EnabledTrades { coins: trades },
+        EnabledMids { dexes },
     )
     .await?
     .run()

@@ -44,8 +44,14 @@ impl MyMid {
         let mut mids = Vec::new();
 
         for (coin, mid_px) in value {
+            if coin.len() > MAX_SYMBOL_LEN {
+                log::warn!(
+                    "MAX_SYMBOL_LEN unsufficient for coin {coin} with {} chars",
+                    coin.len()
+                );
+            }
             mids.push(Self {
-                coin: coin.as_str().try_into().unwrap(),
+                coin: coin.as_str().into(),
                 mid_px: mid_px.into(),
                 timestamp,
             });
