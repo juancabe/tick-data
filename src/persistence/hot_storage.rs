@@ -219,7 +219,18 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
     /// `File` contents are synced to disk every 10 calls to `push`
     pub async fn push(&mut self, data: Vec<T>) -> anyhow::Result<()> {
         Self::append_to_file(&mut self.file, data.iter()).await?;
-        self.data.extend(data);
+
+        for datum in data {
+            if self.data.contains(&datum) {
+                log::warn!(
+                    "[HotStorage::push] id_name: {id} value already exists on data: {datum:?}",
+                    id = self.id_name
+                );
+                continue;
+            }
+
+            self.data.insert(datum);
+        }
 
         // Sync `File` contents with disk
         if self.data_ram_usage() >= self.max_hot_bytes {
