@@ -38,6 +38,7 @@ It needs the configuration file [`/etc/default/tick-data.env`](./systemd/tick-da
 ## Tasks
 
 - [x] ~Handle `SIGTERM` (same handler as `SIGINT`)~ Crash-Only design, no need to handle signals for robust recovery
+- [ ] Code new module that creates periodic backups of `.pq` files, investigate if decompressing and then compressing would improve significantly compression rate. This module can be triggered with a _systemd timer_
 - [ ] Improve in-code documentation
 - [ ] Add new interesting subscriptions
 
