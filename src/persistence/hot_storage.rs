@@ -179,6 +179,12 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
             fs::remove_file(to_delete_file).await?;
         }
 
+        log::info!(
+            "[HotStorage::new] loaded for ({id_name}) with sizeof(data) = {sizeof_data} ({percent}% usage)",
+            sizeof_data = size_of::<T>() * data.len(),
+            percent = size_of::<T>() * data.len() * 100 / max_hot_bytes,
+        );
+
         Ok(Self {
             max_hot_bytes,
             data,
