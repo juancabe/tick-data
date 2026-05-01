@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::UNIX_EPOCH};
+use std::collections::HashMap;
 
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ impl PartialOrd for MyMid {
 
 impl MyMid {
     pub fn from_hm(value: HashMap<String, hypersdk::Decimal>) -> Vec<Self> {
-        let timestamp: u64 = get_timestamp() as u64;
+        let timestamp: u64 = get_timestamp();
 
         let mut mids = Vec::new();
 
