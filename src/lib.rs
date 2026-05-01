@@ -89,7 +89,8 @@ impl WorkingTrades {
                 compressed_storage_dir,
                 max_hot_bytes,
                 compression,
-            );
+            )
+            .await?;
 
             persistences.push(persistence);
 
@@ -213,7 +214,8 @@ impl WorkingMids {
                 compressed_storage_dir,
                 max_hot_bytes,
                 compression,
-            );
+            )
+            .await?;
 
             persistences.push(persistence);
 
@@ -271,7 +273,7 @@ pub struct TickData {
     runnables: Vec<Box<dyn Runnable>>,
 }
 
-pub const DEFAULT_COMPRESSION_LEVEL: u32 = 7;
+pub const DEFAULT_COMPRESSION_LEVEL: i32 = 19;
 
 impl TickData {
     pub async fn new(
@@ -284,8 +286,9 @@ impl TickData {
         let mut trades_dir = work_dir.as_ref().to_path_buf();
         trades_dir.push("trades");
 
-        let comp_level =
-            compression_level.unwrap_or(Compression::ZSTD(ZstdLevel::try_new(9).unwrap()));
+        let comp_level = compression_level.unwrap_or(Compression::ZSTD(
+            ZstdLevel::try_new(DEFAULT_COMPRESSION_LEVEL).unwrap(),
+        ));
 
         let (working_trades, t_persistences) =
             WorkingTrades::new(trades, trades_dir, max_hot_bytes, comp_level).await?;

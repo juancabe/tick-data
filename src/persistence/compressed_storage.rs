@@ -11,6 +11,12 @@ use serde_arrow::schema::{SchemaLike, TracingOptions};
 use crate::persistence::Persistable;
 
 pub trait CompressStorable: Serialize + DeserializeOwned {
+    /// Writes a `Vec<CompressStorable>` to `File` at `file_path`
+    ///
+    /// If `SIGKILL` is received:
+    /// - before `writer.write`, no changes to FS
+    /// - while `writer.write` or `writer.close`, `file_path` content will be corrupted
+    /// - after `writer.write` OS has file contents written to cache, operation done
     fn write_items_to_parquet(
         items: &Vec<Self>,
         file_path: impl AsRef<Path>,
@@ -67,6 +73,54 @@ pub trait CompressStorable: Serialize + DeserializeOwned {
     }
 }
 
+pub enum CSFileName {
+    Complete,
+    Temp,
+}
+
+impl CSFileName {
+    pub fn complete(&self) -> Option<&Self> {
+        match &self {
+            CSFileName::Complete => Some(self),
+            CSFileName::Temp => None,
+        }
+    }
+
+    pub fn temp(&self) -> Option<&Self> {
+        match &self {
+            CSFileName::Complete => None,
+            CSFileName::Temp => Some(self),
+        }
+    }
+
+    pub fn try_from_string_and_id<T: Persistable>(id_name: &str, value: String) -> Option<Self> {
+        let mut split = value.split(".");
+
+        // file_name part
+        let file_name_wo_ext = split.next()?;
+
+        if !T::valid_unique_file_name_wo_ext(file_name_wo_ext, id_name) {
+            return None;
+        }
+
+        // extension part
+        let pq_ext = split.next()?;
+        if !pq_ext.eq("pq") {
+            return None;
+        };
+
+        match split.next() {
+            Some(tmp_ext) => {
+                if !tmp_ext.eq("tmp") {
+                    return None;
+                }
+                Some(Self::Temp)
+            }
+            None => Some(Self::Complete),
+        }
+    }
+}
+
 pub struct CompressedStorage<'a, T: Persistable> {
     dir_path: PathBuf,
     to_compress_receiver: &'a mut tokio::sync::mpsc::Receiver<super::ToCompress<T>>,
@@ -94,6 +148,48 @@ impl<'a, T: Persistable> CompressedStorage<'a, T> {
         Ok(())
     }
 
+    pub async fn find_old_files_pathbufs(
+        id_name: &str,
+        dir_path: impl AsRef<Path>,
+    ) -> anyhow::Result<Vec<(PathBuf, CSFileName)>> {
+        let mut entries = tokio::fs::read_dir(dir_path).await?;
+        let mut file_names = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            log::debug!("Entry found: {entry:?}");
+            let Ok(metadata) = entry.metadata().await else {
+                // Symlinks may return err if broken
+                log::debug!("Entry metadata error");
+                continue;
+            };
+            if !metadata.is_file() {
+                log::debug!("Entry is not file");
+                continue;
+            }
+
+            let Ok(file_name) = entry.file_name().into_string() else {
+                continue;
+            };
+
+            let Some(csfn) = CSFileName::try_from_string_and_id::<T>(id_name, file_name) else {
+                continue;
+            };
+
+            file_names.push((entry.path(), csfn));
+        }
+
+        Ok(file_names)
+    }
+
+    /// Writes compressed ".pq" file and deletes `to_delete_file_path`
+    ///
+    /// ## Left state
+    /// Based on where (-A., A., A-B, B-C, C-D) it fails
+    /// -  *-A*: The `to_delete_file_path` will remain uncompressed, no FS changes  
+    /// -  *A.*: Refer to `write_items_to_parquet`
+    /// - *A-B*: `.pq.tmp` temporal file written, contents not marked as commited yet
+    /// - *B-C*: `.pq` file contents commited, need to remove `to_delete_file_path`
+    /// - *C-*: Operation done! `.pq` file written and `to_delete_file_path` deleted
     async fn compress_and_delete(&self, tc: super::ToCompress<T>) -> anyhow::Result<PathBuf> {
         let mut file_name = tc
             .to_delete_file_path
@@ -105,17 +201,23 @@ impl<'a, T: Persistable> CompressedStorage<'a, T> {
 
         let file_path = self.dir_path.join(file_name);
         let compression_level = self.compression_level;
-        let file_path_c = file_path.clone();
+        let file_path_tmp = file_path.with_extension(".tmp");
+        let file_path_closure = file_path_tmp.clone();
 
+        // A.
         // Writer wants to use blocking `Writer`
         tokio::task::spawn_blocking(move || {
             let data = tc.data;
-            T::write_items_to_parquet(&data, file_path, compression_level)
+            T::write_items_to_parquet(&data, file_path_closure, compression_level)
         })
         .await??;
 
+        // B.
+        tokio::fs::rename(file_path_tmp, &file_path).await?;
+        // C.
         tokio::fs::remove_file(tc.to_delete_file_path).await?;
-        Ok(file_path_c)
+
+        Ok(file_path)
     }
 }
 

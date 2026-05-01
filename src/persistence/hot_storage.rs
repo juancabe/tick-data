@@ -12,17 +12,63 @@ use tokio::{
 
 use crate::persistence::Persistable;
 
+const UFN_UUID_VERSION: uuid::Version = uuid::Version::SortRand;
+
 pub trait HotStorable:
     DeserializeOwned + Serialize + Eq + std::fmt::Debug + std::hash::Hash + Clone + Ord
 {
-    fn unique_file_name(id_name: &str) -> String {
+    fn unique_file_name_wo_ext(id_name: &str) -> String {
+        assert!(!id_name.contains("_"));
         let mut ret = String::new();
-        ret.push_str(&uuid::Uuid::now_v7().to_string());
+        let uuid = uuid::Uuid::now_v7();
+        assert_eq!(
+            uuid.get_version()
+                .expect("Should contain valid UUID version"),
+            UFN_UUID_VERSION
+        );
+
+        ret.push_str(&uuid.to_string());
         ret.push('_');
         ret.push_str(id_name);
+
+        assert!(Self::valid_unique_file_name_wo_ext(&ret, id_name));
+
         ret
     }
 
+    fn valid_unique_file_name_wo_ext(file_name: &str, id_name: &str) -> bool {
+        let mut split = file_name.split("_");
+
+        // destructuring
+        let Some(uuid_part) = split.next() else {
+            return false;
+        };
+        let Some(id_name_part) = split.next() else {
+            return false;
+        };
+        let None = split.next() else { return false };
+
+        // parsing
+        // uuid
+        let Ok(uuid) = uuid::Uuid::parse_str(uuid_part) else {
+            return false;
+        };
+        let Some(version) = uuid.get_version() else {
+            return false;
+        };
+        if !version.eq(&UFN_UUID_VERSION) {
+            return false;
+        };
+
+        // id_name
+        if !id_name_part.eq(id_name) {
+            return false;
+        }
+
+        true
+    }
+
+    // Doesn't check if the complete file name is valid, just the first part "[uuid]_"
     fn get_latest_file_name_match<'a>(file_names: impl Iterator<Item = &'a str>) -> Option<String> {
         file_names
             .flat_map(|f| f.split("_").next().map(|p_uuid| (f, p_uuid)))
@@ -53,7 +99,7 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
         vec
     }
 
-    async fn find_old_files_pathbufs(
+    pub async fn find_old_files_pathbufs(
         id_name: &str,
         dir_path: impl AsRef<Path>,
     ) -> anyhow::Result<Vec<PathBuf>> {
@@ -72,14 +118,12 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
                 continue;
             }
 
-            if !entry.file_name().to_string_lossy().contains(id_name)
-                || entry.file_name().to_string_lossy().contains(".pq")
-            {
-                log::debug!(
-                    "Entry file_name ({}) doesn't contain: {}",
-                    entry.file_name().to_string_lossy(),
-                    id_name
-                );
+            let efn = entry.file_name();
+            let Some(file_name) = efn.to_str() else {
+                continue;
+            };
+
+            if !T::valid_unique_file_name_wo_ext(file_name, id_name) {
                 continue;
             }
 
@@ -89,47 +133,56 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
         Ok(file_names)
     }
 
-    async fn recover_old_file(
+    async fn recover_old_data(
         id_name: &str,
         dir_path: impl AsRef<Path>,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<(Vec<T>, Vec<PathBuf>)> {
         let old_files = Self::find_old_files_pathbufs(id_name, dir_path).await?;
-        let file_names = old_files
-            .iter()
-            .filter_map(|pb| pb.file_name())
-            .filter_map(|osstr| osstr.to_str());
-        let last_file = T::get_latest_file_name_match(file_names);
-        log::info!("last_file: {:?}", last_file);
-        Ok(last_file)
+        let mut data = Vec::new();
+
+        for file in &old_files {
+            let mut file = Self::open_file(file).await?;
+            let n_data = Self::read_file(&mut file).await?;
+            data.extend(n_data);
+        }
+
+        Ok((data, old_files))
     }
 
+    /// Create a new `HotStorage`
+    ///
+    /// # Flow
+    /// 1. Read all current hot files (chfs) and extract data (`Vec<T>`) from them
+    /// 2. Write all that data to a new hot file
+    /// 3. Delete all chfs
     pub async fn new(
         id_name: String,
         max_hot_bytes: usize,
         dir: PathBuf,
         to_compress_sender: &'a tokio::sync::mpsc::Sender<super::ToCompress<T>>,
     ) -> anyhow::Result<Self> {
-        let file_name = Self::recover_old_file(&id_name, &dir)
-            .await?
-            .unwrap_or_else(|| T::unique_file_name(&id_name));
+        // 1.
+        let (data, to_delete_files) = Self::recover_old_data(&id_name, &dir).await?;
+        let data = HashSet::from_iter(data);
+
+        // 2.
+        let new_file_name = T::unique_file_name_wo_ext(&id_name);
         let mut file_full_path = dir.clone();
-        file_full_path.push(file_name);
+        file_full_path.push(new_file_name);
+        let mut new_file = Self::open_file(&file_full_path).await?;
 
-        let mut file = Self::open_file(&file_full_path).await?;
+        Self::append_to_file(&mut new_file, data.iter()).await?;
+        new_file.sync_all().await?;
 
-        let data = match Self::read_file(&mut file).await? {
-            Some(d) => HashSet::from_iter(d),
-            None => {
-                file.set_len(0).await?;
-                log::info!("File {file_full_path:?} size was truncated to 0");
-                HashSet::new()
-            }
-        };
+        // 3.
+        for to_delete_file in to_delete_files {
+            fs::remove_file(to_delete_file).await?;
+        }
 
         Ok(Self {
             max_hot_bytes,
             data,
-            file,
+            file: new_file,
             file_path: file_full_path,
             to_compress_sender,
             dir_path: dir,
@@ -167,7 +220,7 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
             // File will be dropped, sync
             self.file.sync_data().await?;
 
-            let new_file_name = T::unique_file_name(&self.id_name);
+            let new_file_name = T::unique_file_name_wo_ext(&self.id_name);
             log::warn!(
                 "[HotStorage::push] data usage ({data_usage}) is higher than max ({max}), creating new hot file ({new_file_name})",
                 data_usage = self.data_ram_usage(),
@@ -236,12 +289,12 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
     /// When finished cursor'll be placed at the end of the `File` unless an error causes early return
     ///
     /// ### Parse error case
-    /// Logs parsing error and returns Ok(None)
+    /// Logs parsing error and returns `Ok(vec)` with records parsed so far
     /// ### `fs` error
     /// Returns `Err(_)`
     /// ### Valid (even if empty) `Vec<T>`
     /// Returns `Ok(vec)`
-    async fn read_file(file: &mut File) -> anyhow::Result<Option<Vec<T>>> {
+    async fn read_file(file: &mut File) -> anyhow::Result<Vec<T>> {
         let mut reader = BufReader::new(file);
         let mut records = Vec::new();
         let mut deserialize_buf = Vec::new();
@@ -256,14 +309,14 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
                 Ok(r) => r,
                 Err(pe) => {
                     log::warn!("Parse error reading file: {pe:?}");
-                    return Ok(None);
+                    return Ok(records);
                 }
             };
             records.push(record);
             deserialize_buf.clear();
         }
 
-        Ok(Some(records))
+        Ok(records)
     }
 }
 
@@ -282,7 +335,7 @@ mod tests {
         Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
     )]
     struct HotStorableMock(usize);
-    const MOCK_ID_NAME: &str = "HOT_STORABLE_MOCK";
+    const MOCK_ID_NAME: &str = "HOTSTORABLEMOCK";
 
     impl HotStorable for HotStorableMock {}
     impl CompressStorable for HotStorableMock {}
@@ -315,15 +368,17 @@ mod tests {
                 .await?;
         assert_eq!(old_paths.len(), 1);
 
-        HotStorage::<HotStorableMock>::recover_old_file(MOCK_ID_NAME, dir.path())
-            .await?
-            .expect("Should exist");
+        let (data, files) =
+            HotStorage::<HotStorableMock>::recover_old_data(MOCK_ID_NAME, dir.path()).await?;
+
+        assert_eq!(data.len(), 0);
+        assert_eq!(files.len(), 1);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_hot_file_reuse_empty() -> anyhow::Result<()> {
+    async fn test_hot_file_delete_empty() -> anyhow::Result<()> {
         init_logger();
         let dir = tempfile::tempdir()?;
         let (s, _) = get_channel();
@@ -343,7 +398,8 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(hot_storage1.file_path, hot_storage2.file_path);
+        assert_ne!(hot_storage1.file_path, hot_storage2.file_path);
+        assert!(!hot_storage1.file_path.exists());
         Ok(())
     }
 
@@ -373,7 +429,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(hot_storage1.file_path, hot_storage2.file_path);
+        assert_ne!(hot_storage1.file_path, hot_storage2.file_path);
         assert_eq!(hot_storage1.data.len(), N_MOCKS);
         assert_eq!(hot_storage1.data.len(), hot_storage2.data.len());
         assert!(
@@ -465,6 +521,183 @@ mod tests {
         assert_ne!(start_file_path, end_file_path);
         assert_ne!(start_file_d, end_file_d);
         assert!(start_file_path.try_exists().unwrap());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recover_old_data_multiple_files() -> anyhow::Result<()> {
+        init_logger();
+        let dir = tempfile::tempdir()?;
+
+        let h1_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h1_path = dir.path().join(&h1_name);
+        let mut file1 = tokio::fs::File::create(&h1_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(
+            &mut file1,
+            [HotStorableMock(1), HotStorableMock(2)].iter(),
+        )
+        .await?;
+        file1.sync_all().await?;
+
+        let h2_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h2_path = dir.path().join(&h2_name);
+        let mut file2 = tokio::fs::File::create(&h2_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(
+            &mut file2,
+            [HotStorableMock(3), HotStorableMock(4)].iter(),
+        )
+        .await?;
+        file2.sync_all().await?;
+
+        let (data, files) =
+            HotStorage::<HotStorableMock>::recover_old_data(MOCK_ID_NAME, dir.path()).await?;
+
+        assert_eq!(data.len(), 4);
+        assert!(data.contains(&HotStorableMock(1)));
+        assert!(data.contains(&HotStorableMock(2)));
+        assert!(data.contains(&HotStorableMock(3)));
+        assert!(data.contains(&HotStorableMock(4)));
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&h1_path));
+        assert!(files.contains(&h2_path));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recover_old_data_corrupted_tail_returns_partial() -> anyhow::Result<()> {
+        init_logger();
+        let dir = tempfile::tempdir()?;
+
+        let h1_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h1_path = dir.path().join(&h1_name);
+        let mut file1 = tokio::fs::File::create(&h1_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(
+            &mut file1,
+            [HotStorableMock(1), HotStorableMock(2)].iter(),
+        )
+        .await?;
+        file1.sync_all().await?;
+
+        // Corrupt the tail
+        use tokio::io::AsyncWriteExt;
+        let mut file1_append = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&h1_path)
+            .await?;
+        file1_append.write_all(&[0x01, 0x02, 0x03, 0x04]).await?; // Random bytes that don't form a valid COBS struct
+        file1_append.sync_all().await?;
+
+        let (data, files) =
+            HotStorage::<HotStorableMock>::recover_old_data(MOCK_ID_NAME, dir.path()).await?;
+
+        assert_eq!(data.len(), 2);
+        assert!(data.contains(&HotStorableMock(1)));
+        assert!(data.contains(&HotStorableMock(2)));
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&h1_path));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recover_old_data_empty_directory() -> anyhow::Result<()> {
+        init_logger();
+        let dir = tempfile::tempdir()?;
+
+        let (data, files) =
+            HotStorage::<HotStorableMock>::recover_old_data(MOCK_ID_NAME, dir.path()).await?;
+
+        assert!(data.is_empty());
+        assert!(files.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_hot_storage_new_consolidates_recovered_files() -> anyhow::Result<()> {
+        init_logger();
+        let dir = tempfile::tempdir()?;
+        let (s, _) = get_channel();
+
+        let h1_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h1_path = dir.path().join(&h1_name);
+        let mut file1 = tokio::fs::File::create(&h1_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(&mut file1, [HotStorableMock(1)].iter())
+            .await?;
+        file1.sync_all().await?;
+
+        let h2_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h2_path = dir.path().join(&h2_name);
+        let mut file2 = tokio::fs::File::create(&h2_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(&mut file2, [HotStorableMock(2)].iter())
+            .await?;
+        file2.sync_all().await?;
+
+        let hot_storage = HotStorage::<HotStorableMock>::new(
+            MOCK_ID_NAME.to_string(),
+            MAX_HOT_BYTES,
+            dir.path().to_path_buf(),
+            &s,
+        )
+        .await?;
+
+        assert_eq!(hot_storage.data.len(), 2);
+        assert!(hot_storage.data.contains(&HotStorableMock(1)));
+        assert!(hot_storage.data.contains(&HotStorableMock(2)));
+
+        assert!(!h1_path.exists());
+        assert!(!h2_path.exists());
+        assert!(hot_storage.file_path.exists());
+
+        assert_ne!(hot_storage.file_path, h1_path);
+        assert_ne!(hot_storage.file_path, h2_path);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_hot_storage_new_deduplicates_overlapping_data() -> anyhow::Result<()> {
+        init_logger();
+        let dir = tempfile::tempdir()?;
+        let (s, _) = get_channel();
+
+        let h1_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h1_path = dir.path().join(&h1_name);
+        let mut file1 = tokio::fs::File::create(&h1_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(
+            &mut file1,
+            [HotStorableMock(1), HotStorableMock(2)].iter(),
+        )
+        .await?;
+        file1.sync_all().await?;
+
+        let h2_name = HotStorableMock::unique_file_name_wo_ext(MOCK_ID_NAME);
+        let h2_path = dir.path().join(&h2_name);
+        let mut file2 = tokio::fs::File::create(&h2_path).await?;
+        HotStorage::<HotStorableMock>::append_to_file(
+            &mut file2,
+            [HotStorableMock(2), HotStorableMock(3)].iter(),
+        )
+        .await?;
+        file2.sync_all().await?;
+
+        let hot_storage = HotStorage::<HotStorableMock>::new(
+            MOCK_ID_NAME.to_string(),
+            MAX_HOT_BYTES,
+            dir.path().to_path_buf(),
+            &s,
+        )
+        .await?;
+
+        assert_eq!(hot_storage.data.len(), 3);
+        assert!(hot_storage.data.contains(&HotStorableMock(1)));
+        assert!(hot_storage.data.contains(&HotStorableMock(2)));
+        assert!(hot_storage.data.contains(&HotStorableMock(3)));
+
+        assert!(!h1_path.exists());
+        assert!(!h2_path.exists());
 
         Ok(())
     }

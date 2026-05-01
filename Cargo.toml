@@ -25,7 +25,7 @@ rust_decimal = { version = "1.41.0", features = ["bytemuck", "c-repr"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_arrow = { version = "0.14.0", features = ["arrow-58"] }
 thiserror = "2.0.18"
-tokio = { version = "1.52.1", features = ["fs", "macros", "rt-multi-thread"] }
+tokio = { version = "1.52.1", features = ["fs", "macros", "rt-multi-thread", "signal"] }
 uuid = { version = "1.23.1", features = ["v7"] }
 
 [dev-dependencies]
