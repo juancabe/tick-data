@@ -31,8 +31,6 @@ impl PartialOrd for MyMid {
 }
 
 impl MyMid {
-    pub const ID_NAME: &'static str = "ALLMIDS";
-
     pub fn from_hm(value: HashMap<String, hypersdk::Decimal>) -> Vec<Self> {
         let timestamp: u64 = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)

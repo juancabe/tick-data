@@ -1,14 +1,10 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use hypersdk::hypercore::{self, Subscription, ws::Event};
+use hypersdk::hypercore::{self, ws::Event};
 use tokio::time::sleep;
 
-#[async_trait::async_trait]
-pub trait SubscriptionHandler {
-    fn subscriptions(&self) -> Vec<Subscription>;
-    async fn handle_incoming(&self, msg: hypercore::Incoming) -> bool;
-}
+use crate::worker::SubscriptionHandler;
 
 #[derive(Default)]
 pub struct IngestService {

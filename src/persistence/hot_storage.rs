@@ -68,15 +68,15 @@ pub trait HotStorable:
         true
     }
 
-    // Doesn't check if the complete file name is valid, just the first part "[uuid]_"
-    fn get_latest_file_name_match<'a>(file_names: impl Iterator<Item = &'a str>) -> Option<String> {
-        file_names
-            .flat_map(|f| f.split("_").next().map(|p_uuid| (f, p_uuid)))
-            .flat_map(|(f, p_uuid)| uuid::Uuid::parse_str(p_uuid).map(|p_uuid| (f, p_uuid)))
-            .filter(|(_, uuid)| matches!(uuid.get_version(), Some(uuid::Version::SortRand)))
-            .max_by_key(|(_, uuid)| *uuid)
-            .map(|(f, _)| f.to_string())
-    }
+    // // Doesn't check if the complete file name is valid, just the first part "[uuid]_"
+    // fn get_latest_file_name_match<'a>(file_names: impl Iterator<Item = &'a str>) -> Option<String> {
+    //     file_names
+    //         .flat_map(|f| f.split("_").next().map(|p_uuid| (f, p_uuid)))
+    //         .flat_map(|(f, p_uuid)| uuid::Uuid::parse_str(p_uuid).map(|p_uuid| (f, p_uuid)))
+    //         .filter(|(_, uuid)| matches!(uuid.get_version(), Some(uuid::Version::SortRand)))
+    //         .max_by_key(|(_, uuid)| *uuid)
+    //         .map(|(f, _)| f.to_string())
+    // }
 }
 
 pub struct HotStorage<'a, T: Persistable> {
