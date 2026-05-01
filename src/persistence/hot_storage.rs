@@ -180,7 +180,7 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
         }
 
         log::info!(
-            "[HotStorage::new] loaded for ({id_name}) with sizeof(data) = {sizeof_data} ({percent}% usage)",
+            "[HotStorage::new] loaded for ({id_name}) with sizeof(data) = {sizeof_data} ({percent}% usage)\nAt: {dir:?}",
             sizeof_data = size_of::<T>() * data.len(),
             percent = size_of::<T>() * data.len() * 100 / max_hot_bytes,
         );
@@ -220,16 +220,26 @@ impl<'a, T: Persistable> HotStorage<'a, T> {
     pub async fn push(&mut self, data: Vec<T>) -> anyhow::Result<()> {
         Self::append_to_file(&mut self.file, data.iter()).await?;
 
+        let mut repeated = 0;
+        let mut repeated_sample = None;
         for datum in data {
             if self.data.contains(&datum) {
-                log::warn!(
-                    "[HotStorage::push] id_name: {id} value already exists on data: {datum:?}",
-                    id = self.id_name
-                );
+                repeated += 1;
+                if repeated_sample.is_none() {
+                    repeated_sample = Some(datum.clone());
+                }
+
                 continue;
             }
 
             self.data.insert(datum);
+        }
+
+        if let Some(repeated_sample) = repeated_sample {
+            log::warn!(
+                "[HotStorage::push] id_name: {id} | ({repeated}) values already exist on data: {repeated_sample:?}",
+                id = self.id_name
+            );
         }
 
         // Sync `File` contents with disk

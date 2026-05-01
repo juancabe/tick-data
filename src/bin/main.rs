@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf, str::FromStr};
 
-use tick_data::{Dex, EnabledMids, EnabledTrades};
+use tick_data::{Dex, EnabledCoins, EnabledMids};
 
 const DEFAULT_HOT_BUDGET: usize = 125_000_000;
 
@@ -19,7 +19,14 @@ async fn main() -> anyhow::Result<()> {
     let trades: Vec<String> = env::var("TRADE_COINS")
         .map(|val| val.split(',').map(|s| s.to_string()).collect())
         .inspect(|coins| {
-            log::info!("[main] coins parsed: {coins:?}");
+            log::info!("[main] trade coins parsed: {coins:?}");
+        })
+        .unwrap_or_default();
+
+    let asset_contexts: Vec<String> = env::var("ASSET_CONTEXT_COINS")
+        .map(|val| val.split(',').map(|s| s.to_string()).collect())
+        .inspect(|coins| {
+            log::info!("[main] asset context coins parsed: {coins:?}");
         })
         .unwrap_or_default();
 
@@ -60,7 +67,10 @@ async fn main() -> anyhow::Result<()> {
         hot_budget,
         PathBuf::from_str(&work_dir).unwrap(),
         None,
-        EnabledTrades { coins: trades },
+        EnabledCoins { coins: trades },
+        EnabledCoins {
+            coins: asset_contexts,
+        },
         EnabledMids { dexes },
     )
     .await?

@@ -4,9 +4,9 @@ use std::sync::Once;
 #[cfg(test)]
 use log::LevelFilter;
 
-use crate::worker::Runnable;
+use crate::worker::{Runnable, asset_context::WorkingAssetContexts};
 
-use std::{path::Path, pin::Pin};
+use std::{path::Path, pin::Pin, time::UNIX_EPOCH};
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use parquet::basic::{Compression, ZstdLevel};
@@ -39,7 +39,7 @@ pub struct EnabledMids {
     pub dexes: Vec<Dex>,
 }
 
-pub struct EnabledTrades {
+pub struct EnabledCoins {
     pub coins: Vec<String>,
 }
 
@@ -55,28 +55,41 @@ impl TickData {
         max_hot_bytes: usize,
         work_dir: impl AsRef<Path>,
         compression_level: Option<Compression>,
-        trades: EnabledTrades,
+        trades: EnabledCoins,
+        asset_contexts: EnabledCoins,
         mids: EnabledMids,
     ) -> anyhow::Result<Self> {
-        let mut trades_dir = work_dir.as_ref().to_path_buf();
-        trades_dir.push("trades");
-
         let comp_level = compression_level.unwrap_or(Compression::ZSTD(
             ZstdLevel::try_new(DEFAULT_COMPRESSION_LEVEL).unwrap(),
         ));
 
+        // Trades
+        let mut trades_dir = work_dir.as_ref().to_path_buf();
+        trades_dir.push("trades");
+
         let (working_trades, t_persistences) =
             WorkingTrades::new(trades, trades_dir, max_hot_bytes, comp_level).await?;
 
+        // Mids
         let mut mids_dir = work_dir.as_ref().to_path_buf();
         mids_dir.push("mids");
 
         let (working_mids, m_persistences) =
             WorkingMids::new(mids, mids_dir, max_hot_bytes, comp_level).await?;
 
+        // Contexts
+
+        let mut contexts_dir = work_dir.as_ref().to_path_buf();
+        contexts_dir.push("asset_contexts");
+
+        let (working_contexts, c_persistences) =
+            WorkingAssetContexts::new(asset_contexts, contexts_dir, max_hot_bytes, comp_level)
+                .await?;
+
         let handlers: Vec<Box<dyn SubscriptionHandler>> = vec![
             Box::new(working_mids) as Box<dyn SubscriptionHandler>,
             Box::new(working_trades),
+            Box::new(working_contexts),
         ];
 
         let ingest = IngestService::new(handlers);
@@ -89,6 +102,11 @@ impl TickData {
         );
         runnables.extend(
             m_persistences
+                .into_iter()
+                .map(|p| Box::new(p) as Box<dyn Runnable>),
+        );
+        runnables.extend(
+            c_persistences
                 .into_iter()
                 .map(|p| Box::new(p) as Box<dyn Runnable>),
         );
@@ -117,6 +135,15 @@ impl TickData {
 
         log::error!("[TickData::run] {task_name} main task finished");
     }
+}
+
+fn get_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Correct system clock")
+        .as_millis()
+        .try_into()
+        .expect("Reasonable year to run this code :D")
 }
 
 #[cfg(test)]

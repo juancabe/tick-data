@@ -5,6 +5,7 @@ use tokio::{sync::mpsc::Sender, time::Instant};
 
 use crate::persistence::Persistable;
 
+pub mod asset_context;
 pub mod mids;
 pub mod trades;
 

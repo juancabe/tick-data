@@ -2,6 +2,7 @@ use hypersdk::Decimal;
 use postcard::experimental::max_size::MaxSize;
 use serde::{Deserialize, Serialize};
 
+pub mod asset_context;
 pub mod mid;
 pub mod trade;
 

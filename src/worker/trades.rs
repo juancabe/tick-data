@@ -4,7 +4,7 @@ use hypersdk::hypercore::{Incoming, Subscription};
 use parquet::basic::Compression;
 
 use crate::{
-    EnabledTrades,
+    EnabledCoins,
     persistence::{Persistence, models::trade::MyTrade},
     worker::{DataPipeline, SubscriptionHandler},
 };
@@ -15,7 +15,7 @@ pub struct WorkingTrades {
 
 impl WorkingTrades {
     pub async fn new(
-        enabled: EnabledTrades,
+        enabled: EnabledCoins,
         base_dir: PathBuf,
         max_hot_bytes: usize,
         compression: Compression,

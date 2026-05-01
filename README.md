@@ -15,6 +15,7 @@ Collected data can be personalized, you can opt out of every piece of data colle
   Example: HOT_BUDGET=125000000 with 3 coins + 2 dex mids -> 5 pipelines
   125 MB * 5 = ~0.625 GB average, can spike to ~1.25 GB
 - *TRADE_COINS*: Comma-separated list of symbols to subscribe to the trades stream.
+- *ASSET_CONTEXT_COINS*: Comma-separated list of symbols to subscribe to the asset_context stream.
 - *DEFAULT_DEX_MIDS_ENABLED*: Possible values [true | false] to enable mids for the default dex.
 - *MIDS_NON_DEFAULT_DEXES*: Comma-separated list of dex identifiers to subscribe to `all_mids`.
 
